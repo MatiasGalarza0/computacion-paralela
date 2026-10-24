@@ -1,12 +1,4 @@
-"""Paralela Lab — Dashboard de las tablas reales de baseproyecto.
 
-Relaciones:
- registros.id = resultados_mimd.id_mimd
- registros.id = resultados_misd.id_misd
- registros.id = resultados_simd.id_simd
-
-No modifica tablas ni requiere fechas o tiempos de procesamiento.
-"""
 import io
 import zipfile
 
