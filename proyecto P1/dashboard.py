@@ -1,3 +1,4 @@
+"""Paralela Lab — Dashboard de las tablas reales de baseproyecto.
 
 Relaciones:
  registros.id = resultados_mimd.id_mimd
@@ -161,6 +162,15 @@ def aplicar_filtros(df, generos, edades):
     return df[df["genero"].isin(generos) & df["edad"].between(*edades)].copy()
 
 
+def limitar_personas(df, cantidad=None, modo="Aleatoria"):
+    """Selecciona hasta N IDs únicos, de forma reproducible y sin modificar MySQL."""
+    if df.empty or cantidad is None or cantidad >= len(df):
+        return df.copy()
+    if modo == "Aleatoria":
+        return df.sample(n=cantidad, random_state=42).sort_values("id").copy()
+    return df.sort_values("id").head(cantidad).copy()
+
+
 def conversiones(df):
     return {
         nombre: int(df[campo].notna().sum()) if campo in df else 0
@@ -231,7 +241,37 @@ if lim_inf < lim_sup:
 else:
     edades = (lim_inf, lim_sup)
 personas_filtradas = aplicar_filtros(personas, generos, edades)
-filtradas = {arq: aplicar_filtros(df, generos, edades) for arq, df in relacionadas.items()}
+
+st.sidebar.markdown("**Cantidad de datos a visualizar**")
+total_filtrable = len(personas_filtradas)
+opciones_cantidad = ["Todos", "50", "100", "500", "1.000", "2.000", "3.000", "Personalizada"]
+opcion_cantidad = st.sidebar.selectbox("Registros por mostrar", opciones_cantidad, index=0)
+if opcion_cantidad == "Personalizada":
+    cantidad_deseada = st.sidebar.number_input(
+        "Número de registros", min_value=1,
+        max_value=max(1, total_filtrable), value=min(100, max(1, total_filtrable)), step=1,
+    )
+elif opcion_cantidad == "Todos":
+    cantidad_deseada = total_filtrable
+else:
+    cantidad_deseada = int(opcion_cantidad.replace(".", ""))
+
+modo_muestra = st.sidebar.radio(
+    "Cómo seleccionar registros", ["Aleatoria", "Primeros ID"],
+    horizontal=True, help="La muestra aleatoria utiliza siempre la misma semilla para mantener resultados reproducibles.",
+)
+personas_filtradas = limitar_personas(personas_filtradas, cantidad_deseada, modo_muestra)
+ids_visibles = set(personas_filtradas["id"])
+filtradas = {
+    arq: aplicar_filtros(df, generos, edades).loc[
+        lambda d: d["id"].isin(ids_visibles)
+    ].copy()
+    for arq, df in relacionadas.items()
+}
+st.sidebar.caption(
+    f"Mostrando {len(personas_filtradas):,} de {total_filtrable:,} personas "
+    f"que cumplen los filtros de género y edad."
+)
 
 for tabla, error in errores.items():
     if not tablas.get(tabla, pd.DataFrame()).empty and tabla not in ("registros",):
@@ -256,6 +296,7 @@ def descarga(nombre, df, key):
 
 if seccion == "🏠 Inicio":
     encabezado("Explorador de arquitecturas", "Indicadores de salud · procesamiento, clasificación y comparación de resultados")
+    st.caption(f"Vista actual: {len(personas_filtradas):,} personas seleccionadas de {len(personas):,} personas únicas en MySQL.")
     columnas = st.columns(4)
     columnas[0].metric("Personas únicas", f"{personas_filtradas['id'].nunique():,}")
     for columna, arq in zip(columnas[1:], CLAVES):
@@ -425,6 +466,6 @@ elif seccion == "📥 Descargas":
     st.divider()
     st.download_button("📦 Descargar todas las tablas en un ZIP", archivo_zip(tablas, relacionadas, filtradas),
                        file_name="tablas_paralela_lab.zip", mime="application/zip", use_container_width=True)
-    st.caption("Archivos CSV compatibles con Excel. Ninguna descarga modifica tu base MySQL.")
+    st.caption("Las tablas originales se descargan completas; los archivos filtrados respetan género, edad y cantidad seleccionada. Ninguna descarga modifica MySQL.")
 
 st.caption("Proyecto P1 · MySQL en modo lectura · sin tiempo ni fecha de procesamiento")
