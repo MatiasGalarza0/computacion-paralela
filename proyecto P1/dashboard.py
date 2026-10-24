@@ -1,4 +1,3 @@
-"""Paralela Lab — Dashboard de las tablas reales de baseproyecto.
 
 Relaciones:
  registros.id = resultados_mimd.id_mimd
@@ -156,17 +155,10 @@ def relacionar(personas, resultados, arquitectura):
     return unidos, repetidos
 
 
-def aplicar_filtros(df, generos, edades, busqueda):
+def aplicar_filtros(df, generos, edades):
     if df.empty:
         return df.copy()
-    filtrados = df[df["genero"].isin(generos) & df["edad"].between(*edades)].copy()
-    if busqueda:
-        t = busqueda.casefold().strip()
-        nombres = filtrados.get("nombre", pd.Series("", index=filtrados.index)).astype(str)
-        apellidos = filtrados.get("apellido", pd.Series("", index=filtrados.index)).astype(str)
-        texto = filtrados["id"].astype(str) + " " + nombres + " " + apellidos
-        filtrados = filtrados[texto.str.casefold().str.contains(t, regex=False)]
-    return filtrados
+    return df[df["genero"].isin(generos) & df["edad"].between(*edades)].copy()
 
 
 def conversiones(df):
@@ -238,10 +230,8 @@ if lim_inf < lim_sup:
     edades = st.sidebar.slider("Edad", min_value=lim_inf, max_value=lim_sup, value=(lim_inf, lim_sup))
 else:
     edades = (lim_inf, lim_sup)
-busqueda = st.sidebar.text_input("Buscar ID, nombre o apellido", placeholder="Buscar persona...")
-
-personas_filtradas = aplicar_filtros(personas, generos, edades, busqueda)
-filtradas = {arq: aplicar_filtros(df, generos, edades, busqueda) for arq, df in relacionadas.items()}
+personas_filtradas = aplicar_filtros(personas, generos, edades)
+filtradas = {arq: aplicar_filtros(df, generos, edades) for arq, df in relacionadas.items()}
 
 for tabla, error in errores.items():
     if not tablas.get(tabla, pd.DataFrame()).empty and tabla not in ("registros",):
