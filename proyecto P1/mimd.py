@@ -31,9 +31,9 @@ with open('dataset_indicadores.csv','r',encoding="utf-8-sig", newline="") as arc
 print("Dataset cargado correctamente")
 print("Numero de elementos cargados en el dataset: ",len(id))
 
-glucosa_mmol_L = [None] * len(id)
-colesterol_mmol_L = [None] * len(id)
-trigliceridos_mmol_L = [None] * len(id)
+glucosa_mmol_L = [0.0] * len(id)
+colesterol_mmol_L = [0.0] * len(id)
+trigliceridos_mmol_L = [0.0] * len(id)
 
 def convertir_glucosa(inicio, fin):
     for i in range(inicio, fin):
