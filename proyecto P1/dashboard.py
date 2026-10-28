@@ -1,12 +1,4 @@
-"""Paralela Lab — Dashboard de las tablas reales de baseproyecto.
 
-Relaciones:
- registros.id = resultados_mimd.id_mimd
- registros.id = resultados_misd.id_misd
- registros.id = resultados_simd.id_simd
-
-No modifica tablas ni requiere fechas o tiempos de procesamiento.
-"""
 import io
 import zipfile
 
@@ -133,6 +125,10 @@ def preparar_resultados(resultados, arquitectura):
     if clave not in resultados.columns:
         raise ValueError(f"En resultados_{arquitectura.lower()} falta la columna '{clave}'.")
     datos = resultados.copy()
+    if arquitectura == "MIMD":
+        if "conversion" not in datos.columns or "resultado" not in datos.columns:
+            raise ValueError("La tabla resultados_mimd necesita las columnas id_mimd, conversion y resultado. Ejecuta el SQL de cambio de tabla y el nuevo mimd.py.")
+        datos["resultado"] = pd.to_numeric(datos["resultado"], errors="coerce")
     # MISD y SIMD traen 'id' (PK propia): no reemplaza registros.id.
     if "id" in datos.columns:
         datos = datos.drop(columns=["id"])
@@ -156,20 +152,27 @@ def relacionar(personas, resultados, arquitectura):
     return unidos, repetidos
 
 
-def aplicar_filtros(df, generos, edades, busqueda):
+def aplicar_filtros(df, generos, edades):
     if df.empty:
         return df.copy()
-    filtrados = df[df["genero"].isin(generos) & df["edad"].between(*edades)].copy()
-    if busqueda:
-        t = busqueda.casefold().strip()
-        nombres = filtrados.get("nombre", pd.Series("", index=filtrados.index)).astype(str)
-        apellidos = filtrados.get("apellido", pd.Series("", index=filtrados.index)).astype(str)
-        texto = filtrados["id"].astype(str) + " " + nombres + " " + apellidos
-        filtrados = filtrados[texto.str.casefold().str.contains(t, regex=False)]
-    return filtrados
+    return df[df["genero"].isin(generos) & df["edad"].between(*edades)].copy()
+
+
+def limitar_personas(df, cantidad=None, modo="Aleatoria"):
+    """Selecciona hasta N IDs únicos, de forma reproducible y sin modificar MySQL."""
+    if df.empty or cantidad is None or cantidad >= len(df):
+        return df.copy()
+    if modo == "Aleatoria":
+        return df.sample(n=cantidad, random_state=42).sort_values("id").copy()
+    return df.sort_values("id").head(cantidad).copy()
 
 
 def conversiones(df):
+    if "conversion" in df.columns and "resultado" in df.columns:
+        return {
+            nombre: int(((df["conversion"] == nombre) & df["resultado"].notna()).sum())
+            for nombre in INDICADORES
+        }
     return {
         nombre: int(df[campo].notna().sum()) if campo in df else 0
         for nombre, (_orig, campo, _color) in INDICADORES.items()
@@ -238,10 +241,38 @@ if lim_inf < lim_sup:
     edades = st.sidebar.slider("Edad", min_value=lim_inf, max_value=lim_sup, value=(lim_inf, lim_sup))
 else:
     edades = (lim_inf, lim_sup)
-busqueda = st.sidebar.text_input("Buscar ID, nombre o apellido", placeholder="Buscar persona...")
+personas_filtradas = aplicar_filtros(personas, generos, edades)
 
-personas_filtradas = aplicar_filtros(personas, generos, edades, busqueda)
-filtradas = {arq: aplicar_filtros(df, generos, edades, busqueda) for arq, df in relacionadas.items()}
+st.sidebar.markdown("**Cantidad de datos a visualizar**")
+total_filtrable = len(personas_filtradas)
+opciones_cantidad = ["Todos", "50", "100", "500", "1.000", "2.000", "3.000", "Personalizada"]
+opcion_cantidad = st.sidebar.selectbox("Registros por mostrar", opciones_cantidad, index=0)
+if opcion_cantidad == "Personalizada":
+    cantidad_deseada = st.sidebar.number_input(
+        "Número de registros", min_value=1,
+        max_value=max(1, total_filtrable), value=min(100, max(1, total_filtrable)), step=1,
+    )
+elif opcion_cantidad == "Todos":
+    cantidad_deseada = total_filtrable
+else:
+    cantidad_deseada = int(opcion_cantidad.replace(".", ""))
+
+modo_muestra = st.sidebar.radio(
+    "Cómo seleccionar registros", ["Aleatoria", "Primeros ID"],
+    horizontal=True, help="La muestra aleatoria utiliza siempre la misma semilla para mantener resultados reproducibles.",
+)
+personas_filtradas = limitar_personas(personas_filtradas, cantidad_deseada, modo_muestra)
+ids_visibles = set(personas_filtradas["id"])
+filtradas = {
+    arq: aplicar_filtros(df, generos, edades).loc[
+        lambda d: d["id"].isin(ids_visibles)
+    ].copy()
+    for arq, df in relacionadas.items()
+}
+st.sidebar.caption(
+    f"Mostrando {len(personas_filtradas):,} de {total_filtrable:,} personas "
+    f"que cumplen los filtros de género y edad."
+)
 
 for tabla, error in errores.items():
     if not tablas.get(tabla, pd.DataFrame()).empty and tabla not in ("registros",):
@@ -266,6 +297,7 @@ def descarga(nombre, df, key):
 
 if seccion == "🏠 Inicio":
     encabezado("Explorador de arquitecturas", "Indicadores de salud · procesamiento, clasificación y comparación de resultados")
+    st.caption(f"Vista actual: {len(personas_filtradas):,} personas seleccionadas de {len(personas):,} personas únicas en MySQL.")
     columnas = st.columns(4)
     columnas[0].metric("Personas únicas", f"{personas_filtradas['id'].nunique():,}")
     for columna, arq in zip(columnas[1:], CLAVES):
@@ -319,24 +351,32 @@ elif seccion in ("🟣 MIMD", "🟢 MISD", "🟠 SIMD"):
         conversion_df = pd.DataFrame([{"Indicador": nombre, "Cantidad": counts[nombre]} for nombre in INDICADORES])
         grafico(px.bar(conversion_df, x="Indicador", y="Cantidad", color="Indicador", text_auto=True,
                        title="Cantidad de resultados por conversión", color_discrete_sequence=list(COLORES.values())))
-        disponibles = [n for n, (_origen, convertido, _color) in INDICADORES.items()
-                       if convertido in datos.columns and datos[convertido].notna().any()]
+        if arq == "MIMD":
+            disponibles = [nombre for nombre in INDICADORES if counts[nombre] > 0]
+        else:
+            disponibles = [n for n, (_origen, convertido, _color) in INDICADORES.items()
+                           if convertido in datos.columns and datos[convertido].notna().any()]
         if disponibles:
             elegido = st.selectbox("Indicador convertido", disponibles)
             original, convertido, color = INDICADORES[elegido]
+            if arq == "MIMD":
+                datos_grafico = datos[datos["conversion"] == elegido].copy()
+                convertido = "resultado"
+            else:
+                datos_grafico = datos.copy()
             a, b = st.columns(2)
             with a:
-                fig = px.histogram(datos.dropna(subset=[convertido]), x=convertido, nbins=28,
+                fig = px.histogram(datos_grafico.dropna(subset=[convertido]), x=convertido, nbins=28,
                                    color_discrete_sequence=[color], title=f"Distribución de {elegido} (mmol/L)",
                                    labels={convertido: f"{elegido} (mmol/L)"})
                 grafico(fig)
             with b:
-                df_e = datos.dropna(subset=[convertido])
+                df_e = datos_grafico.dropna(subset=[convertido])
                 por_edad = df_e.groupby("rango_edad", observed=False)[convertido].mean().reset_index()
                 grafico(px.bar(por_edad, x="rango_edad", y=convertido, color_discrete_sequence=[color],
                                title=f"Promedio de {elegido} por edad", labels={"rango_edad": "Edad", convertido: "mmol/L"}))
-            if original in datos.columns:
-                grafico(px.box(datos.dropna(subset=[original]), x="genero", y=original, color="genero",
+            if original in datos_grafico.columns:
+                grafico(px.box(datos_grafico.dropna(subset=[original]), x="genero", y=original, color="genero",
                                color_discrete_map=GENERO_COLORES, points=False,
                                title=f"Valores originales de {elegido} por género (mg/dL)"))
         st.subheader("Resultados relacionados con registros")
@@ -435,6 +475,6 @@ elif seccion == "📥 Descargas":
     st.divider()
     st.download_button("📦 Descargar todas las tablas en un ZIP", archivo_zip(tablas, relacionadas, filtradas),
                        file_name="tablas_paralela_lab.zip", mime="application/zip", use_container_width=True)
-    st.caption("Archivos CSV compatibles con Excel. Ninguna descarga modifica tu base MySQL.")
+    st.caption("Las tablas originales se descargan completas; los archivos filtrados respetan género, edad y cantidad seleccionada. Ninguna descarga modifica MySQL.")
 
 st.caption("Proyecto P1 · MySQL en modo lectura · sin tiempo ni fecha de procesamiento")
