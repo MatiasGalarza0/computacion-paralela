@@ -125,10 +125,6 @@ def preparar_resultados(resultados, arquitectura):
     if clave not in resultados.columns:
         raise ValueError(f"En resultados_{arquitectura.lower()} falta la columna '{clave}'.")
     datos = resultados.copy()
-    if arquitectura == "MIMD":
-        if "conversion" not in datos.columns or "resultado" not in datos.columns:
-            raise ValueError("La tabla resultados_mimd necesita las columnas id_mimd, conversion y resultado. Ejecuta el SQL de cambio de tabla y el nuevo mimd.py.")
-        datos["resultado"] = pd.to_numeric(datos["resultado"], errors="coerce")
     # MISD y SIMD traen 'id' (PK propia): no reemplaza registros.id.
     if "id" in datos.columns:
         datos = datos.drop(columns=["id"])
@@ -167,12 +163,17 @@ def limitar_personas(df, cantidad=None, modo="Aleatoria"):
     return df.sort_values("id").head(cantidad).copy()
 
 
+def datos_para_calculos(df):
+    copia = df.copy()
+    if "id_mimd" in copia.columns:
+        for _original, campo, _color in INDICADORES.values():
+            if campo in copia.columns:
+                copia[campo] = copia[campo].mask(copia[campo].eq(0))
+    return copia
+
+
 def conversiones(df):
-    if "conversion" in df.columns and "resultado" in df.columns:
-        return {
-            nombre: int(((df["conversion"] == nombre) & df["resultado"].notna()).sum())
-            for nombre in INDICADORES
-        }
+    df = datos_para_calculos(df)
     return {
         nombre: int(df[campo].notna().sum()) if campo in df else 0
         for nombre, (_orig, campo, _color) in INDICADORES.items()
@@ -343,7 +344,7 @@ elif seccion in ("🟣 MIMD", "🟢 MISD", "🟠 SIMD"):
         st.info(f"No hay resultados de {arq} para los filtros actuales. Comprueba su tabla MySQL.")
     else:
         if arq == "MIMD":
-            tarjeta("Distribución por bloques", "Cada registro tiene una conversión. El hilo 1 procesa glucosa, el hilo 2 colesterol y el hilo 3 triglicéridos.", COLORES[arq])
+            tarjeta("Distribución por bloques", "Cada registro tiene una conversión. El hilo 1 procesa glucosa, el hilo 2 colesterol y el hilo 3 triglicéridos. Los ceros de MIMD se muestran en las tablas, pero se excluyen de los conteos y gráficos porque representan conversiones no realizadas.", COLORES[arq])
         elif arq == "MISD":
             tarjeta("Las mismas personas, tres resultados", "El programa de clase calcula tres conversiones por registro. Por eso el número de conversiones puede superar al número de personas.", COLORES[arq])
         else:
@@ -351,32 +352,25 @@ elif seccion in ("🟣 MIMD", "🟢 MISD", "🟠 SIMD"):
         conversion_df = pd.DataFrame([{"Indicador": nombre, "Cantidad": counts[nombre]} for nombre in INDICADORES])
         grafico(px.bar(conversion_df, x="Indicador", y="Cantidad", color="Indicador", text_auto=True,
                        title="Cantidad de resultados por conversión", color_discrete_sequence=list(COLORES.values())))
-        if arq == "MIMD":
-            disponibles = [nombre for nombre in INDICADORES if counts[nombre] > 0]
-        else:
-            disponibles = [n for n, (_origen, convertido, _color) in INDICADORES.items()
-                           if convertido in datos.columns and datos[convertido].notna().any()]
+        datos_calculo = datos_para_calculos(datos)
+        disponibles = [n for n, (_origen, convertido, _color) in INDICADORES.items()
+                       if convertido in datos_calculo.columns and datos_calculo[convertido].notna().any()]
         if disponibles:
             elegido = st.selectbox("Indicador convertido", disponibles)
             original, convertido, color = INDICADORES[elegido]
-            if arq == "MIMD":
-                datos_grafico = datos[datos["conversion"] == elegido].copy()
-                convertido = "resultado"
-            else:
-                datos_grafico = datos.copy()
             a, b = st.columns(2)
             with a:
-                fig = px.histogram(datos_grafico.dropna(subset=[convertido]), x=convertido, nbins=28,
+                fig = px.histogram(datos_calculo.dropna(subset=[convertido]), x=convertido, nbins=28,
                                    color_discrete_sequence=[color], title=f"Distribución de {elegido} (mmol/L)",
                                    labels={convertido: f"{elegido} (mmol/L)"})
                 grafico(fig)
             with b:
-                df_e = datos_grafico.dropna(subset=[convertido])
+                df_e = datos_calculo.dropna(subset=[convertido])
                 por_edad = df_e.groupby("rango_edad", observed=False)[convertido].mean().reset_index()
                 grafico(px.bar(por_edad, x="rango_edad", y=convertido, color_discrete_sequence=[color],
                                title=f"Promedio de {elegido} por edad", labels={"rango_edad": "Edad", convertido: "mmol/L"}))
-            if original in datos_grafico.columns:
-                grafico(px.box(datos_grafico.dropna(subset=[original]), x="genero", y=original, color="genero",
+            if original in datos.columns:
+                grafico(px.box(datos_calculo.dropna(subset=[convertido, original]), x="genero", y=original, color="genero",
                                color_discrete_map=GENERO_COLORES, points=False,
                                title=f"Valores originales de {elegido} por género (mg/dL)"))
         st.subheader("Resultados relacionados con registros")
